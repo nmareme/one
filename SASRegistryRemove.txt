@@ -1,0 +1,125 @@
+#BEGINBUCKET SASREGISTRYREMOVE
+#/ ----------------------------------------------------------------------
+#/ S1354598: This template provides job steps to populate the copy of the
+#/ SASHELP data set, then use that SASHELP to run SAS and use PROC DATASETS
+#/ to remove the registry item store from the production SASHELP. Once all
+#/ of this is complete, the SASHELP copy is deleted. This happens only
+#/ during a UIP (Action B) so that only the latest version of the SAS
+#/ registry is installed.
+#/ ----------------------------------------------------------------------
+#BEGININSTANCEQUALIFIERS
+#/
+#/ The following conditions must be met:
+#/   * Must be in update mode
+#/   * Base content must be present
+#/   * Registry content must be present
+#/   * The content must be for SR or TR (English or translated registry)
+#/
+#IFNOTEQ [UPDATEMODE] TRUE #THEN DOESNOTQUALIFY
+#IFNOTEQ {PRODUCT} base #THEN DOESNOTQUALIFY
+#IFNOTEQ {ARTIFACTTYPE} XRG #THEN DOESNOTQUALIFY
+#IFEQ {MVS2BDSCODE} SR #CREATEINSTANCEFROMENTRY
+#IFEQ {MVS2BDSCODE} TR #CREATEINSTANCEFROMENTRY
+#DOESNOTQUALIFY
+#ENDQUALIFIERS
+#/ -------------------------------------------------------------------
+#BEGINPREFIX
+#/ -------------------------------------------------------------------
+//*
+#IF [INSTALL-TO-STAGE] #THEN SKIPCOPY
+#SNIPPETINSERT CopyRegistry.txt
+#SKIPCOPY
+//*
+//* Delete the registry item store from SASHELP
+//*
+//SASDREG EXEC PGM=[ENTRY],COND=(0,LT),
+//  PARM=('SETINIT MSGCASE ERRORABEND NOWORKTERM',  
+#IFEQ [ORDERENCODING] WU #://        'CAPSOUT',
+//        'MACRO ERRORCHECK=STRICT SASUSER=WORK')
+#IFEQ [HOST] z64 #THEN USEZE
+#TABLEFIX LD  #/ Load Library
+#THEN STEPLIB
+#USEZE
+#TABLEFIX ZE  #/ 64-bit load library
+#STEPLIB
+//STEPLIB  DD DISP=SHR,
+//  DSN=[CUSTPRODQUAL].[LOQUAL]
+#TABLEFIX SH
+//SASHELP DD DISP=SHR,
+#IF [INSTALL-TO-STAGE] #THEN USEPROD
+//  DSN=[CUSTPRODQUAL].ML.[LOQUAL]  #/ use the backup copy of SASHELP
+#THEN NEXT
+#USEPROD
+//  DSN=[CUSTPRODQUAL].[LOQUAL]  #/use the production copy of SASHELP
+#NEXT
+#TABLEFIX AU  #/ Autocalls
+//[DFLTDDN] DD DISP=SHR,
+//  DSN=[CUSTPRODQUAL].[LOQUAL]
+#IFEQ [HOST] z64 #THEN SKIPSM
+#TABLEFIX SM  #/ SAS messages
+//[DFLTDDN] DD DISP=SHR,
+//  DSN=[CUSTPRODQUAL].[LOQUAL]
+#SKIPSM
+//TKMVSENV DD DATA,DLM='!1'
+#SNIPPETINSERT SASDefaultTkmvsenv.txt
+!1
+//WORK     DD UNIT=[TMPUNI],SPACE=(6144,([WORKSPC])),
+//         DCB=(RECFM=FS,LRECL=6144,BLKSIZE=6144)
+//SASLOG   DD SYSOUT=[SYSOUT]
+//SASCLOG  DD SYSOUT=[SYSOUT]
+//CONFIG   DD DATA,DLM='!^'
+#SNIPPETINSERT SASDefaultConfig.txt
+!^
+//SASLIST  DD SYSOUT=[SYSOUT]
+//SASPARM  DD UNIT=[TMPUNI],SPACE=(400,(100,300)),
+//         DCB=(RECFM=FB,LRECL=80,BLKSIZE=400,BUFNO=1)
+//SYSIN  DD DATA,DLM='!^'  #/ Delimiter is !^ in column 1 of line
+#/ -------------------------------------------------------------------
+#BEGININSTANCE
+#/ -------------------------------------------------------------------
+#IF [INSTALL-TO-STAGE] #THEN USESL
+#SET [QUAL]
+#THEN NEXT
+#USESL
+#SET [QUAL] [STAGEQUAL]
+#NEXT
+#IFNOTEQ {LANG} en #THEN NOTEN
+#TABLEFIX SH
+ libname enreg
+    "[CUSTPRODQUAL][QUAL].[LOQUAL]"
+    disp=old;
+ proc datasets lib=enreg mt=itemstor nolist;
+ delete regstry;
+ run;
+ quit;
+#THEN NEXT
+#NOTEN
+#SET [DSLANGCODE] {LANG2BCODE}
+#TABLEFIX TH  #/ translated SASHELP
+ libname trreg
+    "[CUSTPRODQUAL][QUAL].[LOQUAL]"
+    disp=old;
+ proc datasets lib=trreg mt=itemstor nolist;
+ delete regstry;
+ run;
+ quit;
+ libname trreg clear;
+#NEXT
+#/ -------------------------------------------------------------------
+#ENDINSTANCE
+#/ -------------------------------------------------------------------
+#/ -------------------------------------------------------------------
+#BEGINSUFFIX
+#/ -------------------------------------------------------------------
+!^
+#IF [INSTALL-TO-STAGE] #THEN NODELETE
+//*
+//* Delete the .ML SASHELP as it is not needed for production
+//*
+#TABLEFIX SH
+//DELMLSH  EXEC PGM=IEFBR14,COND=(0,LT)
+//HLHELP    DD  DSN=[CUSTPRODQUAL].ML.[LOQUAL],
+// DISP=(MOD,DELETE,KEEP),UNIT=[TMPUNI],SPACE=(TRK,(1,1,1))
+#NODELETE
+//*
+#ENDBUCKET SASREGISTRYREMOVE
